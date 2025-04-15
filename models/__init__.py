@@ -1,0 +1,1 @@
+from .ConvNeXt_pretrained import StixelPredictor

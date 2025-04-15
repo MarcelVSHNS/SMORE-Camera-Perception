@@ -1,0 +1,6 @@
+pystixel-lib
+torch
+torchvision
+pandas
+coopscenes
+einops
