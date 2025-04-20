@@ -86,7 +86,7 @@ class StixelHead(nn.Module):
             x = self.attention_influence(attention_x, x)
         x = self.channel_reduce(x)
         x = self.up(x)
-        assert self.out_channels % self.i_attributes == 0, "NN depth does not match, adapt n_channels."
+        assert self.out_channels % 3 == 0, "NN depth does not match, adapt n_channels."
         n_candidates = self.out_channels // 3
         x = rearrange(x, 'b (a n) h w -> b a n h w', a=3, n=n_candidates)
         return self.activation(x.squeeze(dim=3))
@@ -100,8 +100,10 @@ class StixelConvNeXt(ConvNeXt):
         return x
 
 
-def _convnext_stixel(weights: Optional[str] = None, **kwargs: Any) -> Tuple[ConvNeXt, Dict[str, Any]]:
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def _convnext_stixel(weights: Optional[str] = None, device: torch.device = None, **kwargs: Any) -> Tuple[
+    ConvNeXt, Dict[str, Any]]:
+    if device is not None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     name: str = f"StixelNExT++ for CoopScenes with weights from {weights}."
     model_params = {'name': name, 'C': C, 'B': B}
 
@@ -136,7 +138,7 @@ def _convnext_stixel(weights: Optional[str] = None, **kwargs: Any) -> Tuple[Conv
 def _revert_pred_to_stixel(prediction: torch.Tensor,
                            prob: float = 0.33,
                            stixel_width: int = 16,
-                           name: str = "StixelWorld 1337",
+                           name="StixelWorld 1337",
                            camera_info: Optional[cs.CameraInformation] = None,
                            ) -> List[stx.StixelWorld]:
     """ extract stixel information from prediction """
@@ -146,10 +148,13 @@ def _revert_pred_to_stixel(prediction: torch.Tensor,
     img_height = 1200
     for batch in pred_np:
         stxl_wrld = stx.StixelWorld()
-        stxl_wrld.context.name = name
+        stxl_wrld.context.name = str(name)
         if camera_info is not None:
             # https://github.com/MarcelVSHNS/CoopScenes/blob/main/coopscenes/data/metadata.py
             stxl_wrld.context.calibration.K.extend(camera_info.camera_mtx.flatten().tolist())
+            # To bring the sensor plain sensor data (x,y,z at origin=0,0,0) into the vehicle coordinate system, the
+            # extrinsic matrix has to be inverted to archive data from the perspective of the vehicle frame.
+            stxl_wrld.context.calibration.T.extend(np.linalg.inv(camera_info.extrinsic).flatten().tolist())
             stxl_wrld.context.calibration.width = camera_info.shape[0]
             stxl_wrld.context.calibration.height = camera_info.shape[1]
             img_height = camera_info.shape[1]
@@ -194,23 +199,27 @@ class StixelPredictor:
             if not os.path.isfile(weights):
                 raise ValueError(f"Provided weights path {weights} does not exist.")
             self.weights = weights
-        self.model, model_config = _convnext_stixel(weights=weights)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model, model_config = _convnext_stixel(weights=weights, device=self.device)
         self.image_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                  std=[0.229, 0.224, 0.225])
         ])
 
-    def inference(self, image: Image, prob: float = 0.33) -> stx.StixelWorld:
+    def inference(self, image: Image, name, camera_info: Optional[cs.CameraInformation] = None,
+                  prob: float = 0.36) -> stx.StixelWorld:
         # prepare image
         sample = self.image_transform(image)
         sample = sample.unsqueeze(0)
-        sample = sample.to(self.model.device)
+        sample = sample.to(self.device)
         with torch.no_grad():
             prediction = self.model(sample)
         prediction = prediction.detach().cpu()
         # interpret prediction
         stxl_wrld_batch = _revert_pred_to_stixel(prediction=prediction,
+                                                 name=name,
+                                                 camera_info=camera_info,
                                                  prob=prob)
         # add image
         stxl_wrld = stx.add_image(stxl_wrld_batch[0], image)

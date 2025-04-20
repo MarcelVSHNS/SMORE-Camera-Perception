@@ -1,4 +1,4 @@
-pystixel-lib
+pyStixel-lib
 torch
 torchvision
 pandas
