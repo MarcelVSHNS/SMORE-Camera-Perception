@@ -19,20 +19,6 @@ def to_pointcloud(points: np.ndarray) -> o3d.geometry.PointCloud:
     pcd.points = o3d.utility.Vector3dVector(xyz)
     return pcd
 
-def remove_ground(pcd, distance_threshold=0.24, ransac_n=3, num_iterations=1000):
-    # Fit plane using RANSAC
-    plane_model, inliers = pcd.segment_plane(
-        distance_threshold=distance_threshold,
-        ransac_n=ransac_n,
-        num_iterations=num_iterations
-    )
-
-    # Extract inliers and outliers
-    ground = pcd.select_by_index(inliers)
-    non_ground = pcd.select_by_index(inliers, invert=True)
-
-    return non_ground, ground, plane_model
-
 
 def preprocess_point_cloud(pcd, voxel_size):
     pcd_down = pcd.voxel_down_sample(voxel_size)
@@ -47,9 +33,9 @@ def preprocess_point_cloud(pcd, voxel_size):
 
 
 def main():
-    DATAPATH = "data/seq_2"
-    WEIGHTS_PATH_VEH = "models/StixelNExT-Pro_fresh-durian-552_20.pth"
-    WEIGHTS_PATH_TOW = "models/StixelNExT-Pro_crisp-eon-553_10.pth"
+    DATAPATH = "E:/coopscenes/seq_2"
+    WEIGHTS_PATH_VEH = "models/StixelNExT-Pro_stoic-capybara-555_8.pth"
+    WEIGHTS_PATH_TOW = "models/StixelNExT-Pro_wild-vortex-557_15.pth"
 
     # Models
     vehicle_stixel_predictor = StixelPredictor(weights=WEIGHTS_PATH_VEH)
@@ -63,44 +49,74 @@ def main():
         for frame in datarecord:
             frames.append(frame)
     """
-    record = cs.DataRecord(os.path.join(DATAPATH, "id00747_2024-10-05_11-54-47.4mse"))
-    frame = record[20]
-    # frame.tower.cameras.VIEW_1.show()
-    # frame.tower.cameras.VIEW_2.show()
-    # frame.vehicle.cameras.STEREO_LEFT.show()
+    print(len(dataset))
+    record = dataset[18]        # seq_7-18, 9-17-60
+    frame = record[27]
+    #frame.tower.cameras.VIEW_1.show()
+    #frame.tower.cameras.VIEW_2.show()
+    #frame.vehicle.cameras.STEREO_LEFT.show()
 
     # Ground Truth
     t_cam_vehicle = frame.vehicle.cameras.STEREO_LEFT.info.extrinsic
     t_vehicle_infra = frame.vehicle.info.extrinsic
     t_infracam_infra = frame.tower.cameras.VIEW_1.info.extrinsic
+    elevation_infra_cam_rad = np.arcsin(t_infracam_infra[2, 2])
+    t_cam_origin = t_vehicle_infra @ t_cam_vehicle
+    elevation_veh_cam_rad = np.arcsin(t_cam_origin[2, 2])
+    # elevation_deg = np.degrees(elevation_veh_cam_rad)
+    # print(f"Elevation-Winkel (Grad): {elevation_deg:.2f}")
     ground_truth_t = np.linalg.inv(t_infracam_infra) @ t_vehicle_infra @ t_cam_vehicle  # t_cam_infracam
 
-    # frame.tower.cameras.VIEW_2.image.show()
-    # frame.vehicle.cameras.STEREO_LEFT.image.show()
+    #frame.tower.cameras.VIEW_2.image.show()
+    #frame.tower.cameras.VIEW_1.image.show()
+    #frame.vehicle.cameras.STEREO_LEFT.image.show()
 
     # """
+    prob = 0.27
     # StixelWorld from Vehicle
     stixel_veh = vehicle_stixel_predictor.inference(image=frame.vehicle.cameras.STEREO_LEFT.image.image,
                                                     name=f"{frame.frame_id}_Vehicle",
-                                                    camera_info=frame.vehicle.cameras.STEREO_LEFT.info)
-    # stx_veh_img = stx.draw_stixels_on_image(stixel_veh)
-    # stx_veh_img.show()
+                                                    camera_info=frame.vehicle.cameras.STEREO_LEFT.info,
+                                                    prob=prob)
+    #stx_veh_img = stx.draw_stixels_on_image(stixel_veh)
+    #stx_veh_img.show()
 
     # StixelWorld from Tower
     stixel_tow = tower_stixel_predictor.inference(image=frame.tower.cameras.VIEW_1.image.image,
                                                   name=f"{frame.frame_id}_Tower",
-                                                  camera_info=frame.tower.cameras.VIEW_1.info)
-    # stx_tow_img = stx.draw_stixels_on_image(stixel_tow)
-    # stx_tow_img.show()
+                                                  camera_info=frame.tower.cameras.VIEW_1.info,
+                                                  prob=prob)
+    stixel_tow_bonus = tower_stixel_predictor.inference(image=frame.tower.cameras.VIEW_2.image.image,
+                                                        name=f"{frame.frame_id}_Tower_bonus",
+                                                        camera_info=frame.tower.cameras.VIEW_2.info,
+                                                        prob=prob)
+    #stx_tow_img = stx.draw_stixels_on_image(stixel_tow)
+    #stx_tow_img.show()
     # stx.draw_stixels_in_3d(stixel_tow)
 
-    stx_tow_pts = stx.convert_to_point_cloud(stixel_tow)
-    stx_veh_pts = stx.convert_to_point_cloud(stixel_veh)
+    stx_tow_pts, rgb_tower = stx.convert_to_point_cloud(stixel_tow, slanted_angle_rad=elevation_infra_cam_rad,
+                                                        return_rgb_values=True)
+    veh_correction = elevation_veh_cam_rad if np.degrees(elevation_veh_cam_rad) > 2.5 else None
+    stx_veh_pts, rgb_vehicle = stx.convert_to_point_cloud(stixel_veh, slanted_angle_rad=veh_correction,
+                                                          return_rgb_values=True)
     pcd_infra = to_pointcloud(stx_tow_pts)
     pcd_vehicle = to_pointcloud(stx_veh_pts)
+    stx_tow_bonus_pts, rgb_tower_bonus = stx.convert_to_point_cloud(stixel_tow_bonus,
+                                                                    slanted_angle_rad=frame.tower.cameras.VIEW_2.info.extrinsic[2, 2],
+                                                                    return_rgb_values=True)
+    pcd_bonus = to_pointcloud(stx_tow_bonus_pts)
+    pcd_bonus.colors = o3d.utility.Vector3dVector(rgb_tower_bonus)
     # """
 
-    voxel_size = 1
+    pcd_vehicle.paint_uniform_color([0.251, 0.878, 0.816])  # vehicle = blueish
+    pcd_infra.paint_uniform_color([1.0, 0.412, 0.706])    # infra = pink
+
+    # pcd_vehicle.transform(t_vehicle_infra)
+    #o3d.visualization.draw_geometries([pcd_vehicle, pcd_infra])
+
+    # pcd_vehicle.colors = o3d.utility.Vector3dVector(rgb_vehicle)
+    # pcd_infra.colors = o3d.utility.Vector3dVector(rgb_tower)
+
     # === 7. Infrastruktur-Rotation per ICP schätzen
     # pcd_vehicle = to_pointcloud(frame.vehicle.lidars.TOP.points)
     # pcd_infra = to_pointcloud(frame.tower.lidars.UPPER_PLATFORM.points)
@@ -110,12 +126,9 @@ def main():
     # pcd_infra = to_pointcloud(frame.tower.lidars.UPPER_PLATFORM.points)
     # pcd_infra.transform(frame.tower.lidars.UPPER_PLATFORM.info.extrinsic)
 
+    voxel_size = 1
     pcd_vehicle_down, fpfh_vehicle = preprocess_point_cloud(copy.deepcopy(pcd_vehicle), voxel_size)
     pcd_infra_down, fpfh_infra = preprocess_point_cloud(copy.deepcopy(pcd_infra), voxel_size)
-
-    pcd_vehicle.paint_uniform_color([0, 1, 0])  # vehicle = gruen
-    pcd_infra.paint_uniform_color([1, 0, 0])    # infra = rot
-    o3d.visualization.draw_geometries([pcd_vehicle, pcd_infra])
 
     # === RANSAC-Matching ===
     ransac_result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
@@ -147,18 +160,6 @@ def main():
 
     icp_tf = cs.Transformation('lidar_top', 'lidar_upper_platform', result_icp.transformation)
 
-    """
-    reg_result = o3d.pipelines.registration.registration_icp(
-        pcd_infra, pcd_vehicle,
-        max_correspondence_distance=5.0,
-        init=np.eye(4),
-        estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint()
-    )
-    """
-
-    # === 8. ICP-Rotation in T_infra einbauen
-
-    # === 10. Ursprung verschieben (optional)
     pcd_vehicle.transform(icp_tf.mtx)
     pred_mtx = icp_tf.mtx
     gt_mtx = t_vehicle_infra
@@ -187,75 +188,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-"""
-# StixelWorld from Vehicle
-stixel_veh = vehicle_stixel_predictor.inference(image=frame.vehicle.cameras.STEREO_LEFT.image.image,
-                                                name=f"{frame.frame_id}_Vehicle",
-                                                camera_info=frame.vehicle.cameras.STEREO_LEFT.info)
-# stx_veh_img = stx.draw_stixels_on_image(stixel_veh)
-# stx_veh_img.show()
-
-# StixelWorld from Tower
-stixel_tow = tower_stixel_predictor.inference(image=frame.tower.cameras.VIEW_1.image.image,
-                                              name=f"{frame.frame_id}_Tower",
-                                              camera_info=frame.tower.cameras.VIEW_1.info)
-# stx_tow_img = stx.draw_stixels_on_image(stixel_tow)
-# stx_tow_img.show()
-# stx.draw_stixels_in_3d(stixel_tow)
-
-transformer = Transformer.from_crs("epsg:4326", "epsg:32632", always_xy=True)
-x1, y1 = transformer.transform(float(9.2971638),
-                               float(48.7407864))
-x2, y2 = transformer.transform(float(9.2972455),
-                               float(48.7407824))
-GPS_vehicle = np.array([x2, y2, frame.vehicle.info.height[2, 3]])
-GPS_infra = np.array([x1, y1, frame.tower.info.height[2, 3]])
-print(f"GPS Vehicle: {GPS_vehicle}")
-print(f"GPS Infra: {GPS_infra}")
-
-stx_tow_pts = stx.convert_to_point_cloud(stixel_tow)
-stx_veh_pts = stx.convert_to_point_cloud(stixel_veh)
-#pcd1 = to_pointcloud(stx_tow_pts)
-#pcd2 = to_pointcloud(stx_veh_pts)
-pcd1 = to_pointcloud(frame.tower.lidars.UPPER_PLATFORM.points)
-pcd2 = to_pointcloud(frame.vehicle.lidars.TOP.points)
-translation = np.array([x2 - x1, y2 - y1, frame.vehicle.info.height[2, 3] - frame.tower.info.height[2, 3]])
-#pcd2.translate(translation)
-
-# o3d.visualization.draw_geometries([pcd1.paint_uniform_color([1, 0, 0]), pcd2.paint_uniform_color([0, 1, 0])])
-pcd1, ground1, model1 = remove_ground(pcd1)
-pcd2, ground2, model2 = remove_ground(pcd2)
-o3d.visualization.draw_geometries([pcd1.paint_uniform_color([1, 0, 0]), pcd2.paint_uniform_color([0, 1, 0])])
-
-reg_result = o3d.pipelines.registration.registration_icp(
-    pcd2, pcd1,
-    max_correspondence_distance=200.0,
-    init=np.eye(4),
-    estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint()
-)
-
-# Schritt 1: GPS-basierte Translation
-t_vehicle_infra_translation = np.eye(4)
-t_vehicle_infra_translation[:3, 3] = np.array(GPS_vehicle) - np.array(GPS_infra)
-print("Translation Matrix:")
-print(t_vehicle_infra_translation)
-
-# Schritt 2: Rotation und Feinkorrektur aus ICP
-t_vehicle_infra_est = reg_result.transformation @ t_vehicle_infra_translation
-
-# Endgültige geschätzte Transformation Kamera → Infrastrukturkamera:
-t_cam_infracam_est = np.linalg.inv(t_infracam_infra) @ t_vehicle_infra_est @ t_cam_vehicle
-
-print("Transformation Matrix:")
-print(t_vehicle_infra_est)
-print("GT Matrix:")
-print(t_vehicle_infra)
-print("Error Matrix:")
-print(np.linalg.inv(ground_truth_t) @ t_cam_infracam_est)
-
-# Optional: Transformation anwenden
-pcd2.transform(t_vehicle_infra_est)
-o3d.visualization.draw_geometries([pcd1.paint_uniform_color([1, 0, 0]), pcd2.paint_uniform_color([0, 1, 0])])
-"""
