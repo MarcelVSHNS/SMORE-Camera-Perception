@@ -34,7 +34,7 @@ def preprocess_point_cloud(pcd, voxel_size):
 
 def main():
     DATAPATH = "E:/coopscenes/seq_2"
-    WEIGHTS_PATH_VEH = "models/StixelNExT-Pro_stoic-capybara-555_8.pth"
+    WEIGHTS_PATH_VEH = "models/StixelNExT-Pro_stoic-capybara-555_47.pth"
     WEIGHTS_PATH_TOW = "models/StixelNExT-Pro_wild-vortex-557_15.pth"
 
     # Models
@@ -43,18 +43,12 @@ def main():
 
     # Dataset
     dataset = cs.Dataloader(DATAPATH)
-    """
-    frames = []
-    for datarecord in dataset:
-        for frame in datarecord:
-            frames.append(frame)
-    """
-    print(len(dataset))
-    record = dataset[18]        # seq_7-18, 9-17-60
+    record = dataset[18]
     frame = record[27]
-    #frame.tower.cameras.VIEW_1.show()
+    # frame.tower.cameras.VIEW_1.show()
+    # frame.vehicle.cameras.STEREO_LEFT.show()
+
     #frame.tower.cameras.VIEW_2.show()
-    #frame.vehicle.cameras.STEREO_LEFT.show()
 
     # Ground Truth
     t_cam_vehicle = frame.vehicle.cameras.STEREO_LEFT.info.extrinsic
@@ -64,20 +58,20 @@ def main():
     t_cam_origin = t_vehicle_infra @ t_cam_vehicle
     elevation_veh_cam_rad = np.arcsin(t_cam_origin[2, 2])
     # elevation_deg = np.degrees(elevation_veh_cam_rad)
-    # print(f"Elevation-Winkel (Grad): {elevation_deg:.2f}")
-    ground_truth_t = np.linalg.inv(t_infracam_infra) @ t_vehicle_infra @ t_cam_vehicle  # t_cam_infracam
+    # print(f"Elevation-angle (degree): {elevation_deg:.2f}")
 
     #frame.tower.cameras.VIEW_2.image.show()
     #frame.tower.cameras.VIEW_1.image.show()
     #frame.vehicle.cameras.STEREO_LEFT.image.show()
 
     # """
-    prob = 0.27
+    prob = 0.55
     # StixelWorld from Vehicle
     stixel_veh = vehicle_stixel_predictor.inference(image=frame.vehicle.cameras.STEREO_LEFT.image.image,
                                                     name=f"{frame.frame_id}_Vehicle",
                                                     camera_info=frame.vehicle.cameras.STEREO_LEFT.info,
                                                     prob=prob)
+    # stx.save(stixel_veh, "stixel_veh.ply")
     #stx_veh_img = stx.draw_stixels_on_image(stixel_veh)
     #stx_veh_img.show()
 
@@ -86,16 +80,18 @@ def main():
                                                   name=f"{frame.frame_id}_Tower",
                                                   camera_info=frame.tower.cameras.VIEW_1.info,
                                                   prob=prob)
+    # stx.save(stixel_tow, "stixel_tow.ply")
     stixel_tow_bonus = tower_stixel_predictor.inference(image=frame.tower.cameras.VIEW_2.image.image,
                                                         name=f"{frame.frame_id}_Tower_bonus",
                                                         camera_info=frame.tower.cameras.VIEW_2.info,
                                                         prob=prob)
+    # stx.save(stixel_tow_bonus, "stixel_tow_bonus.ply")
     #stx_tow_img = stx.draw_stixels_on_image(stixel_tow)
     #stx_tow_img.show()
     # stx.draw_stixels_in_3d(stixel_tow)
 
     stx_tow_pts, rgb_tower = stx.convert_to_point_cloud(stixel_tow, slanted_angle_rad=elevation_infra_cam_rad,
-                                                        return_rgb_values=True)
+                                                        return_rgb_values=True)     # elevation_infra_cam_rad
     veh_correction = elevation_veh_cam_rad if np.degrees(elevation_veh_cam_rad) > 2.5 else None
     stx_veh_pts, rgb_vehicle = stx.convert_to_point_cloud(stixel_veh, slanted_angle_rad=veh_correction,
                                                           return_rgb_values=True)
@@ -108,16 +104,16 @@ def main():
     pcd_bonus.colors = o3d.utility.Vector3dVector(rgb_tower_bonus)
     # """
 
-    pcd_vehicle.paint_uniform_color([0.251, 0.878, 0.816])  # vehicle = blueish
-    pcd_infra.paint_uniform_color([1.0, 0.412, 0.706])    # infra = pink
+    #pcd_vehicle.paint_uniform_color([0.251, 0.878, 0.816])  # vehicle = blueish
+    #pcd_infra.paint_uniform_color([1.0, 0.412, 0.706])    # infra = pink
 
     # pcd_vehicle.transform(t_vehicle_infra)
     #o3d.visualization.draw_geometries([pcd_vehicle, pcd_infra])
 
-    # pcd_vehicle.colors = o3d.utility.Vector3dVector(rgb_vehicle)
-    # pcd_infra.colors = o3d.utility.Vector3dVector(rgb_tower)
+    pcd_vehicle.colors = o3d.utility.Vector3dVector(rgb_vehicle)
+    pcd_infra.colors = o3d.utility.Vector3dVector(rgb_tower)
 
-    # === 7. Infrastruktur-Rotation per ICP schätzen
+    """ Dataset inputs for comparisopn with rich features """
     # pcd_vehicle = to_pointcloud(frame.vehicle.lidars.TOP.points)
     # pcd_infra = to_pointcloud(frame.tower.lidars.UPPER_PLATFORM.points)
 
@@ -130,7 +126,7 @@ def main():
     pcd_vehicle_down, fpfh_vehicle = preprocess_point_cloud(copy.deepcopy(pcd_vehicle), voxel_size)
     pcd_infra_down, fpfh_infra = preprocess_point_cloud(copy.deepcopy(pcd_infra), voxel_size)
 
-    # === RANSAC-Matching ===
+    """ RANSAC-Matching """
     ransac_result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
         source=pcd_vehicle_down,
         target=pcd_infra_down,
@@ -149,7 +145,7 @@ def main():
 
     vehicle_tower_tf = cs.Transformation('lidar_top', 'lidar_upper_platform', ransac_result.transformation)
 
-    # === ICP-Verfeinerung auf Basis von RANSAC-Ergebnis ===
+    """ ICP-Matching """
     result_icp = o3d.pipelines.registration.registration_icp(
         source=pcd_vehicle,
         target=pcd_infra,
@@ -168,11 +164,11 @@ def main():
     print(f"Transformation Matrix: \n{pred_mtx}")
     print(f"GT Matrix: \n{gt_mtx}")
 
-    # Translationsfehler berechnen
+    # Translation error
     translation_error = error_mtx[:3, 3]
     translation_distance = np.linalg.norm(translation_error)
 
-    # Rotationsfehler berechnen (in Grad)
+    # Rotation error
     rotation_matrix = error_mtx[:3, :3]
     rotation_vector = R.from_matrix(rotation_matrix).as_rotvec()
     rotation_angle_deg = np.linalg.norm(rotation_vector) * 180 / np.pi
@@ -182,8 +178,10 @@ def main():
     print("\nTranslation error (in meter):", translation_distance)
     print("Rotation error (in degree):", rotation_angle_deg)
 
-    # === 11. Einfärben & anzeigen
+    # visualization
     o3d.visualization.draw_geometries([pcd_vehicle, pcd_infra])
+    combined_pcd = pcd_vehicle + pcd_infra + pcd_bonus
+    o3d.io.write_point_cloud("combined_cloud.ply", combined_pcd)
 
 
 if __name__ == "__main__":
