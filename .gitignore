@@ -176,3 +176,4 @@ data/*
 !logs/.gitignore
 *.pth
 *.4mse
+*.xlsx
