@@ -177,3 +177,4 @@ data/*
 *.pth
 *.4mse
 *.xlsx
+*.ply
